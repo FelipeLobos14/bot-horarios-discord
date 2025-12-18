@@ -1,4 +1,13 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+const ExcelJS = require('exceljs');
+const fs = require('fs');
+const path = require('path');
+const {
+  Client,
+  GatewayIntentBits,
+  SlashCommandBuilder,
+  REST,
+  Routes
+} = require('discord.js');
 
 if (!process.env.TOKEN) {
   console.error('❌ TOKEN NO EXISTE');
@@ -15,18 +24,89 @@ const client = new Client({
 // 👉 CAMBIA ESTE ID POR TU CANAL DE TEXTO
 const TEXT_CHANNEL_ID = '1451012983219032064';
 
-// Guardamos cuándo entra cada usuario
+// Carpeta donde se guardarán los Excel
+const EXCEL_FOLDER = path.join(__dirname, 'estadisticas_excel');
+if (!fs.existsSync(EXCEL_FOLDER)) fs.mkdirSync(EXCEL_FOLDER);
+
+// Sesiones activas
 const voiceSessions = new Map();
 
-client.once('ready', () => {
+// Estadísticas acumuladas
+const userStats = new Map();
+
+client.once('clientReady', async () => {
   console.log(`🤖 Conectado como ${client.user.tag}`);
+
+  // Registrar comandos slash
+  const commands = [
+    new SlashCommandBuilder()
+      .setName('horario')
+      .setDescription('Muestra el historial de voz de un usuario')
+      .addUserOption(option =>
+        option
+          .setName('usuario')
+          .setDescription('Usuario a consultar')
+          .setRequired(true)
+      ),
+    new SlashCommandBuilder()
+      .setName('exportar')
+      .setDescription('Exporta las estadísticas de voz a Excel (solo admins)')
+  ].map(cmd => cmd.toJSON());
+
+  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+
+  try {
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands }
+    );
+    console.log('✅ Comandos registrados');
+  } catch (err) {
+    console.error('❌ Error registrando comandos:', err);
+  }
 });
 
+// Función para guardar Excel diario
+async function saveExcel() {
+  const dateStr = new Date().toISOString().split('T')[0]; // yyyy-mm-dd
+  const filePath = path.join(EXCEL_FOLDER, `estadisticas_voz_${dateStr}.xlsx`);
+
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Estadísticas de Voz');
+
+  sheet.columns = [
+    { header: 'Usuario', key: 'usuario', width: 25 },
+    { header: 'Conexiones', key: 'conexiones', width: 15 },
+    { header: 'Tiempo total (h:m:s)', key: 'tiempo', width: 20 }
+  ];
+
+  userStats.forEach((stats, userId) => {
+    const member = client.guilds.cache
+      .first()
+      ?.members.cache.get(userId);
+    const username = member ? member.user.username : 'Desconocido';
+
+    const total = stats.totalMs;
+    const h = Math.floor(total / 3600000);
+    const m = Math.floor((total % 3600000) / 60000);
+    const s = Math.floor((total % 60000) / 1000);
+
+    sheet.addRow({
+      usuario: username,
+      conexiones: stats.joins,
+      tiempo: `${h}h ${m}m ${s}s`
+    });
+  });
+
+  await workbook.xlsx.writeFile(filePath);
+}
+
+// -------------------- EVENTO VOICE --------------------
 client.on('voiceStateUpdate', async (oldState, newState) => {
   const userId = newState.id;
   const username = newState.member?.user.username;
 
-  // 🟢 Entró a un canal de voz
+  // Entró a un canal
   if (!oldState.channelId && newState.channelId) {
     voiceSessions.set(userId, {
       channel: newState.channel.name,
@@ -35,7 +115,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     return;
   }
 
-  // 🔴 Salió del canal de voz
+  // Salió de un canal
   if (oldState.channelId && !newState.channelId) {
     const session = voiceSessions.get(userId);
     if (!session) return;
@@ -47,6 +127,15 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     const minutes = Math.floor(durationMs / (1000 * 60)) % 60;
     const hours = Math.floor(durationMs / (1000 * 60 * 60));
 
+    // Guardar estadísticas
+    if (!userStats.has(userId)) {
+      userStats.set(userId, { totalMs: 0, joins: 0 });
+    }
+
+    const stats = userStats.get(userId);
+    stats.totalMs += durationMs;
+    stats.joins += 1;
+
     const message = `
 👤 **Usuario:** ${username}
 🎧 **Canal:** ${session.channel}
@@ -57,12 +146,98 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
     try {
       const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID);
-      textChannel.send(message);
+      await textChannel.send(message);
     } catch (err) {
       console.error('❌ Error enviando mensaje:', err.message);
     }
 
     voiceSessions.delete(userId);
+
+    // Guardar Excel automáticamente
+    try {
+      await saveExcel();
+    } catch (err) {
+      console.error('❌ Error guardando Excel:', err.message);
+    }
+  }
+});
+
+// -------------------- COMANDOS --------------------
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+
+  // /horario
+  if (interaction.commandName === 'horario') {
+    const user = interaction.options.getUser('usuario');
+    const stats = userStats.get(user.id);
+
+    if (!stats) {
+      return interaction.reply({
+        content: `❌ ${user.username} no tiene registros aún.`,
+        ephemeral: true
+      });
+    }
+
+    const total = stats.totalMs;
+    const h = Math.floor(total / 3600000);
+    const m = Math.floor((total % 3600000) / 60000);
+    const s = Math.floor((total % 60000) / 1000);
+
+    await interaction.reply(
+      `📊 **Horario de ${user.username}**\n` +
+      `🔁 Conexiones: ${stats.joins}\n` +
+      `⏱ Tiempo total en voz: ${h}h ${m}m ${s}s`
+    );
+  }
+
+  // /exportar
+  if (interaction.commandName === 'exportar') {
+    // Solo admins
+    if (!interaction.member.permissions.has('Administrator')) {
+      return interaction.reply({
+        content: '❌ Solo los administradores pueden usar este comando.',
+        ephemeral: true
+      });
+    }
+
+    if (userStats.size === 0) {
+      return interaction.reply({
+        content: '❌ No hay estadísticas para exportar.',
+        ephemeral: true
+      });
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Estadísticas de Voz');
+
+    sheet.columns = [
+      { header: 'Usuario', key: 'usuario', width: 25 },
+      { header: 'Conexiones', key: 'conexiones', width: 15 },
+      { header: 'Tiempo total (h:m:s)', key: 'tiempo', width: 20 }
+    ];
+
+    userStats.forEach((stats, userId) => {
+      const member = interaction.guild.members.cache.get(userId);
+      const username = member ? member.user.username : 'Desconocido';
+
+      const total = stats.totalMs;
+      const h = Math.floor(total / 3600000);
+      const m = Math.floor((total % 3600000) / 60000);
+      const s = Math.floor((total % 60000) / 1000);
+
+      sheet.addRow({
+        usuario: username,
+        conexiones: stats.joins,
+        tiempo: `${h}h ${m}m ${s}s`
+      });
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    await interaction.reply({
+      content: '📊 Estadísticas exportadas:',
+      files: [{ attachment: buffer, name: `estadisticas_voz_${Date.now()}.xlsx` }]
+    });
   }
 });
 
