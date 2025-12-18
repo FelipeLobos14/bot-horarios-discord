@@ -27,4 +27,5 @@ client.on('interactionCreate', async interaction => {
   if (command) await command.execute(interaction);
 });
 
+console.log('TOKEN =>', process.env.TOKEN ? 'EXISTE' : 'NO EXISTE');
 client.login(process.env.TOKEN);
