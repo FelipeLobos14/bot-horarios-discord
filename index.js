@@ -31,8 +31,23 @@ if (!fs.existsSync(EXCEL_FOLDER)) fs.mkdirSync(EXCEL_FOLDER);
 // Sesiones activas
 const voiceSessions = new Map();
 
-// Estadísticas acumuladas
+// Estadísticas acumuladas con historial de sesiones
+// userStats = Map { userId => { totalMs, joins, sessions: [{ joinedAt, leftAt, channel }] } }
 const userStats = new Map();
+
+// Formatear fecha: "Lunes 17/05/2025 23:45:12"
+function formatDate(date) {
+  const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+  const dayName = days[date.getDay()];
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  const hours = String(date.getHours()).padStart(2,'0');
+  const minutes = String(date.getMinutes()).padStart(2,'0');
+  const seconds = String(date.getSeconds()).padStart(2,'0');
+
+  return `${dayName} ${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+}
 
 client.once('clientReady', async () => {
   console.log(`🤖 Conectado como ${client.user.tag}`);
@@ -66,7 +81,7 @@ client.once('clientReady', async () => {
   }
 });
 
-// Función para guardar Excel diario
+// -------------------- FUNCION GUARDAR EXCEL --------------------
 async function saveExcel() {
   const dateStr = new Date().toISOString().split('T')[0]; // yyyy-mm-dd
   const filePath = path.join(EXCEL_FOLDER, `estadisticas_voz_${dateStr}.xlsx`);
@@ -76,8 +91,11 @@ async function saveExcel() {
 
   sheet.columns = [
     { header: 'Usuario', key: 'usuario', width: 25 },
-    { header: 'Conexiones', key: 'conexiones', width: 15 },
-    { header: 'Tiempo total (h:m:s)', key: 'tiempo', width: 20 }
+    { header: 'Fecha', key: 'fecha', width: 25 },
+    { header: 'Hora inicio', key: 'inicio', width: 15 },
+    { header: 'Hora fin', key: 'fin', width: 15 },
+    { header: 'Duración', key: 'duracion', width: 15 },
+    { header: 'Canal', key: 'canal', width: 20 }
   ];
 
   userStats.forEach((stats, userId) => {
@@ -86,15 +104,20 @@ async function saveExcel() {
       ?.members.cache.get(userId);
     const username = member ? member.user.username : 'Desconocido';
 
-    const total = stats.totalMs;
-    const h = Math.floor(total / 3600000);
-    const m = Math.floor((total % 3600000) / 60000);
-    const s = Math.floor((total % 60000) / 1000);
+    stats.sessions.forEach(sess => {
+      const durationMs = sess.leftAt - sess.joinedAt;
+      const seconds = Math.floor(durationMs / 1000) % 60;
+      const minutes = Math.floor((durationMs / (1000*60)) % 60);
+      const hours = Math.floor(durationMs / (1000*60*60));
 
-    sheet.addRow({
-      usuario: username,
-      conexiones: stats.joins,
-      tiempo: `${h}h ${m}m ${s}s`
+      sheet.addRow({
+        usuario: username,
+        fecha: formatDate(sess.joinedAt).split(' ')[0] + ' ' + formatDate(sess.joinedAt).split(' ')[1],
+        inicio: `${String(sess.joinedAt.getHours()).padStart(2,'0')}:${String(sess.joinedAt.getMinutes()).padStart(2,'0')}`,
+        fin: `${String(sess.leftAt.getHours()).padStart(2,'0')}:${String(sess.leftAt.getMinutes()).padStart(2,'0')}`,
+        duracion: `${hours}h ${minutes}m ${seconds}s`,
+        canal: sess.channel
+      });
     });
   });
 
@@ -127,20 +150,25 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     const minutes = Math.floor(durationMs / (1000 * 60)) % 60;
     const hours = Math.floor(durationMs / (1000 * 60 * 60));
 
-    // Guardar estadísticas
+    // Guardar estadísticas y historial
     if (!userStats.has(userId)) {
-      userStats.set(userId, { totalMs: 0, joins: 0 });
+      userStats.set(userId, { totalMs: 0, joins: 0, sessions: [] });
     }
 
     const stats = userStats.get(userId);
     stats.totalMs += durationMs;
     stats.joins += 1;
+    stats.sessions.push({
+      channel: session.channel,
+      joinedAt: session.joinedAt,
+      leftAt: leftAt
+    });
 
     const message = `
 👤 **Usuario:** ${username}
 🎧 **Canal:** ${session.channel}
-📅 **Conectó:** ${session.joinedAt.toLocaleString()}
-📅 **Desconectó:** ${leftAt.toLocaleString()}
+📅 **Conectó:** ${formatDate(session.joinedAt)}
+📅 **Desconectó:** ${formatDate(leftAt)}
 ⏱ **Tiempo conectado:** ${hours}h ${minutes}m ${seconds}s
     `;
 
@@ -183,10 +211,17 @@ client.on('interactionCreate', async interaction => {
     const m = Math.floor((total % 3600000) / 60000);
     const s = Math.floor((total % 60000) / 1000);
 
+    const sessionList = stats.sessions
+      .map((sess, i) =>
+        `\n🔹 Sesión ${i + 1}: ${formatDate(sess.joinedAt)} → ${formatDate(sess.leftAt)} (${sess.channel})`
+      )
+      .join('');
+
     await interaction.reply(
       `📊 **Horario de ${user.username}**\n` +
       `🔁 Conexiones: ${stats.joins}\n` +
-      `⏱ Tiempo total en voz: ${h}h ${m}m ${s}s`
+      `⏱ Tiempo total en voz: ${h}h ${m}m ${s}s` +
+      `${sessionList}`
     );
   }
 
@@ -212,23 +247,31 @@ client.on('interactionCreate', async interaction => {
 
     sheet.columns = [
       { header: 'Usuario', key: 'usuario', width: 25 },
-      { header: 'Conexiones', key: 'conexiones', width: 15 },
-      { header: 'Tiempo total (h:m:s)', key: 'tiempo', width: 20 }
+      { header: 'Fecha', key: 'fecha', width: 25 },
+      { header: 'Hora inicio', key: 'inicio', width: 15 },
+      { header: 'Hora fin', key: 'fin', width: 15 },
+      { header: 'Duración', key: 'duracion', width: 15 },
+      { header: 'Canal', key: 'canal', width: 20 }
     ];
 
     userStats.forEach((stats, userId) => {
       const member = interaction.guild.members.cache.get(userId);
       const username = member ? member.user.username : 'Desconocido';
 
-      const total = stats.totalMs;
-      const h = Math.floor(total / 3600000);
-      const m = Math.floor((total % 3600000) / 60000);
-      const s = Math.floor((total % 60000) / 1000);
+      stats.sessions.forEach(sess => {
+        const durationMs = sess.leftAt - sess.joinedAt;
+        const seconds = Math.floor(durationMs / 1000) % 60;
+        const minutes = Math.floor((durationMs / (1000*60)) % 60);
+        const hours = Math.floor(durationMs / (1000*60*60));
 
-      sheet.addRow({
-        usuario: username,
-        conexiones: stats.joins,
-        tiempo: `${h}h ${m}m ${s}s`
+        sheet.addRow({
+          usuario: username,
+          fecha: formatDate(sess.joinedAt).split(' ')[0] + ' ' + formatDate(sess.joinedAt).split(' ')[1],
+          inicio: `${String(sess.joinedAt.getHours()).padStart(2,'0')}:${String(sess.joinedAt.getMinutes()).padStart(2,'0')}`,
+          fin: `${String(sess.leftAt.getHours()).padStart(2,'0')}:${String(sess.leftAt.getMinutes()).padStart(2,'0')}`,
+          duracion: `${hours}h ${minutes}m ${seconds}s`,
+          canal: sess.channel
+        });
       });
     });
 
@@ -236,7 +279,7 @@ client.on('interactionCreate', async interaction => {
 
     await interaction.reply({
       content: '📊 Estadísticas exportadas:',
-      files: [{ attachment: buffer, name: `estadisticas_voz_${Date.now()}.xlsx` }]
+      files: [{ attachment: buffer, name: `horario_${Date.now()}.xlsx` }]
     });
   }
 });
