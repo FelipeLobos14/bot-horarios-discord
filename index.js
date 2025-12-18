@@ -35,7 +35,7 @@ const voiceSessions = new Map();
 // userStats = Map { userId => { totalMs, joins, sessions: [{ joinedAt, leftAt, channel }] } }
 const userStats = new Map();
 
-// Formatear fecha: "Lunes 17/05/2025 23:45:12"
+// -------------------- FORMATO DE FECHAS --------------------
 function formatDate(date) {
   const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
   const dayName = days[date.getDay()];
@@ -49,6 +49,7 @@ function formatDate(date) {
   return `${dayName} ${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
 }
 
+// -------------------- CLIENTE LISTO --------------------
 client.once('clientReady', async () => {
   console.log(`🤖 Conectado como ${client.user.tag}`);
 
