@@ -21,7 +21,7 @@ const client = new Client({
   ]
 });
 
-// 👉 TU CANAL DE TEXTO
+// 👉 TU CANAL DE TEXTO DONDE SE ENVIARÁN LOS LOGS
 const TEXT_CHANNEL_ID = '1451012983219032064';
 
 // Carpeta de Excel
@@ -31,17 +31,14 @@ if (!fs.existsSync(EXCEL_FOLDER)) fs.mkdirSync(EXCEL_FOLDER);
 // Control de sesiones y duplicados
 const voiceSessions = new Map();
 const userStats = new Map();
-const processingIds = new Set(); // Evita procesar la misma salida varias veces
+const processingIds = new Set(); 
 
+// Función para formatear fechas
 function formatDate(date) {
   const options = {
     timeZone: 'America/Santiago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
     hour12: false
   };
   const parts = new Intl.DateTimeFormat('es-CL', options).formatToParts(date);
@@ -50,7 +47,6 @@ function formatDate(date) {
   return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
 }
 
-// Registro de comandos
 client.once('ready', async () => {
   console.log(`🤖 Conectado como ${client.user.tag}`);
 
@@ -75,10 +71,8 @@ client.once('ready', async () => {
   }
 });
 
-// Guardado de Excel
-async function saveExcel() {
-  const dateStr = new Date().toISOString().split('T')[0];
-  const filePath = path.join(EXCEL_FOLDER, `estadisticas_voz_${dateStr}.xlsx`);
+// Función centralizada para generar el Excel (se usa para auto-guardado y comando exportar)
+async function generateWorkbook() {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Estadísticas de Voz');
 
@@ -91,9 +85,10 @@ async function saveExcel() {
   ];
 
   userStats.forEach((stats, userId) => {
+    // Intentar obtener el nombre del usuario desde el cache del servidor
     const guild = client.guilds.cache.first();
     const member = guild?.members.cache.get(userId);
-    const username = member ? member.user.username : 'Usuario Desconocido';
+    const username = member ? member.user.username : `ID: ${userId}`;
 
     stats.sessions.forEach(sess => {
       const total = sess.durationMs;
@@ -110,18 +105,15 @@ async function saveExcel() {
       });
     });
   });
-
-  await workbook.xlsx.writeFile(filePath);
+  return workbook;
 }
 
-// --- EVENTO DE VOZ CORREGIDO ---
+// Evento de Voz
 client.on('voiceStateUpdate', async (oldState, newState) => {
   const userId = newState.id;
-
-  // 1. Ignorar si no hubo cambio de canal (silencio, ensordecer, etc.)
   if (oldState.channelId === newState.channelId) return;
 
-  // Caso: Conexión
+  // Entrada
   if (!oldState.channelId && newState.channelId) {
     voiceSessions.set(userId, {
       channel: newState.channel.name,
@@ -130,21 +122,17 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     return;
   }
 
-  // Caso: Desconexión (o cambio de canal)
+  // Salida
   if (oldState.channelId && !newState.channelId) {
     const session = voiceSessions.get(userId);
-
-    // Si no hay sesión o ya se está procesando este usuario, cancelar
     if (!session || processingIds.has(userId)) return;
 
-    // Bloquear para evitar el triple mensaje
     processingIds.add(userId);
 
     const leftAt = new Date();
     const durationMs = leftAt - session.joinedAt;
 
-    // Solo registrar si estuvo más de 1 segundo (evita ruidos de conexión)
-    if (durationMs > 1000) {
+    if (durationMs > 1000) { // Ignorar menos de 1 segundo
       if (!userStats.has(userId)) {
         userStats.set(userId, { totalMs: 0, joins: 0, sessions: [] });
       }
@@ -163,44 +151,39 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       const m = Math.floor((durationMs % 3600000) / 60000);
       const s = Math.floor((durationMs % 60000) / 1000);
 
-      const message = `
-👤 **Usuario:** ${newState.member?.user.username || 'Desconocido'}
-🎧 **Canal:** ${session.channel}
-📅 **Conectó:** ${formatDate(session.joinedAt)}
-📅 **Desconectó:** ${formatDate(leftAt)}
-⏱ **Tiempo conectado:** ${h}h ${m}m ${s}s
-      `;
-
       try {
         const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID);
-        if (textChannel) await textChannel.send(message);
-        await saveExcel();
+        if (textChannel) {
+            await textChannel.send(`👤 **Usuario:** ${newState.member?.user.username}\n🎧 **Canal:** ${session.channel}\n📅 **Conectó:** ${formatDate(session.joinedAt)}\n📅 **Desconectó:** ${formatDate(leftAt)}\n⏱ **Tiempo:** ${h}h ${m}m ${s}s`);
+        }
+        
+        // Auto-guardado en carpeta
+        const workbook = await generateWorkbook();
+        const dateStr = new Date().toISOString().split('T')[0];
+        await workbook.xlsx.writeFile(path.join(EXCEL_FOLDER, `estadisticas_${dateStr}.xlsx`));
+
       } catch (err) {
-        console.error('❌ Error procesando log:', err.message);
+        console.error('❌ Error:', err.message);
       }
     }
 
-    // Limpieza
     voiceSessions.delete(userId);
-    // Desbloqueamos después de 2 segundos para permitir futuras conexiones
     setTimeout(() => processingIds.delete(userId), 2000);
   }
 });
 
-// Comandos de Interacción
+// Comandos
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'horario') {
     const user = interaction.options.getUser('usuario');
     const stats = userStats.get(user.id);
-
-    if (!stats) return interaction.reply({ content: `❌ ${user.username} sin registros.`, ephemeral: true });
+    if (!stats) return interaction.reply({ content: `❌ Sin datos de ${user.username}`, ephemeral: true });
 
     const h = Math.floor(stats.totalMs / 3600000);
     const m = Math.floor((stats.totalMs % 3600000) / 60000);
     const s = Math.floor((stats.totalMs % 60000) / 1000);
-
     await interaction.reply(`📊 **${user.username}**\n🔁 Conexiones: ${stats.joins}\n⏱ Total: ${h}h ${m}m ${s}s`);
   }
 
@@ -208,18 +191,25 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.member.permissions.has('Administrator')) {
       return interaction.reply({ content: '❌ Solo admins.', ephemeral: true });
     }
-    
-    // ... Lógica de exportación igual a tu original pero usando buffers ...
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet('Voz');
-    sheet.columns = [
-        { header: 'Usuario', key: 'u', width: 20 },
-        { header: 'Tiempo', key: 't', width: 20 }
-    ];
-    
-    // (Simplificado para brevedad, puedes usar tu lógica de exportar anterior aquí)
-    const buffer = await workbook.xlsx.writeBuffer();
-    await interaction.reply({ files: [{ attachment: buffer, name: 'reporte.xlsx' }] });
+
+    if (userStats.size === 0) {
+        return interaction.reply({ content: '❌ No hay datos acumulados para exportar.', ephemeral: true });
+    }
+
+    await interaction.deferReply(); // Darle tiempo al bot para generar el archivo
+
+    try {
+        const workbook = await generateWorkbook();
+        const buffer = await workbook.xlsx.writeBuffer();
+        
+        await interaction.editReply({
+          content: '📊 Aquí tienes el historial completo:',
+          files: [{ attachment: buffer, name: `Reporte_Voz_${Date.now()}.xlsx` }]
+        });
+    } catch (error) {
+        console.error(error);
+        await interaction.editReply('❌ Hubo un error al generar el Excel.');
+    }
   }
 });
 
