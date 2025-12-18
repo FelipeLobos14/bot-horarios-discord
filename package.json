@@ -1,14 +1,11 @@
 {
-  "name": "discord",
+  "name": "discord-voice-tracker",
   "version": "1.0.0",
+  "description": "Bot de Discord que registra tiempo en canales de voz",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
   "dependencies": {
     "discord.js": "^14.25.1"
   }

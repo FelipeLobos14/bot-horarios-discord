@@ -1,5 +1,9 @@
-const { Client, GatewayIntentBits, Collection } = require('discord.js');
-const voiceTracker = require('./events/voiceTracker');
+const { Client, GatewayIntentBits } = require('discord.js');
+
+if (!process.env.TOKEN) {
+  console.error('❌ TOKEN NO EXISTE');
+  process.exit(1);
+}
 
 const client = new Client({
   intents: [
@@ -8,25 +12,58 @@ const client = new Client({
   ]
 });
 
+// 👉 CAMBIA ESTE ID POR TU CANAL DE TEXTO
 const TEXT_CHANNEL_ID = '1451012983219032064';
 
-client.commands = new Collection();
-client.commands.set('horario', require('./commands/horario'));
+// Guardamos cuándo entra cada usuario
+const voiceSessions = new Map();
 
-client.once('clientReady', () => {
+client.once('ready', () => {
   console.log(`🤖 Conectado como ${client.user.tag}`);
 });
 
-client.on('voiceStateUpdate', (o, n) =>
-  voiceTracker(client, o, n, TEXT_CHANNEL_ID)
-);
+client.on('voiceStateUpdate', async (oldState, newState) => {
+  const userId = newState.id;
+  const username = newState.member?.user.username;
 
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-  const command = client.commands.get(interaction.commandName);
-  if (command) await command.execute(interaction);
+  // 🟢 Entró a un canal de voz
+  if (!oldState.channelId && newState.channelId) {
+    voiceSessions.set(userId, {
+      channel: newState.channel.name,
+      joinedAt: new Date()
+    });
+    return;
+  }
+
+  // 🔴 Salió del canal de voz
+  if (oldState.channelId && !newState.channelId) {
+    const session = voiceSessions.get(userId);
+    if (!session) return;
+
+    const leftAt = new Date();
+    const durationMs = leftAt - session.joinedAt;
+
+    const seconds = Math.floor(durationMs / 1000) % 60;
+    const minutes = Math.floor(durationMs / (1000 * 60)) % 60;
+    const hours = Math.floor(durationMs / (1000 * 60 * 60));
+
+    const message = `
+👤 **Usuario:** ${username}
+🎧 **Canal:** ${session.channel}
+📅 **Conectó:** ${session.joinedAt.toLocaleString()}
+📅 **Desconectó:** ${leftAt.toLocaleString()}
+⏱ **Tiempo conectado:** ${hours}h ${minutes}m ${seconds}s
+    `;
+
+    try {
+      const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID);
+      textChannel.send(message);
+    } catch (err) {
+      console.error('❌ Error enviando mensaje:', err.message);
+    }
+
+    voiceSessions.delete(userId);
+  }
 });
 
-console.log('ENV KEYS:', Object.keys(process.env));
-console.log('TOKEN =>', process.env.TOKEN);
 client.login(process.env.TOKEN);
