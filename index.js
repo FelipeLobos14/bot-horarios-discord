@@ -34,9 +34,25 @@ const voiceSessions = new Map();
 // Estadísticas acumuladas por usuario
 const userStats = new Map();
 
-// Función para formatear fechas
+// Función para formatear fechas en zona horaria de Chile
 function formatDate(date) {
-  return date.toISOString().replace('T', ' ').split('.')[0]; // YYYY-MM-DD HH:MM:SS
+  const options = {
+    timeZone: 'America/Santiago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  };
+  
+  const parts = new Intl.DateTimeFormat('es-CL', options).formatToParts(date);
+  const map = {};
+  parts.forEach(p => map[p.type] = p.value);
+
+  // Formato YYYY-MM-DD HH:MM:SS
+  return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
 }
 
 client.once('ready', async () => {
