@@ -32,8 +32,12 @@ if (!fs.existsSync(EXCEL_FOLDER)) fs.mkdirSync(EXCEL_FOLDER);
 const voiceSessions = new Map();
 
 // Estadísticas acumuladas por usuario
-// Cada usuario guarda un array de sesiones
 const userStats = new Map();
+
+// Función para formatear fechas
+function formatDate(date) {
+  return date.toISOString().replace('T', ' ').split('.')[0]; // YYYY-MM-DD HH:MM:SS
+}
 
 client.once('ready', async () => {
   console.log(`🤖 Conectado como ${client.user.tag}`);
@@ -98,8 +102,8 @@ async function saveExcel() {
       sheet.addRow({
         usuario: username,
         canal: sess.channel,
-        conecto: sess.joinedAt.toLocaleString(),
-        desconecto: sess.leftAt.toLocaleString(),
+        conecto: formatDate(sess.joinedAt),
+        desconecto: formatDate(sess.leftAt),
         tiempo: `${h}h ${m}m ${s}s`
       });
     });
@@ -113,6 +117,9 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   const userId = newState.id;
   const username = newState.member?.user.username;
 
+  // Ignorar cambios dentro del mismo canal (mute/deafen, etc)
+  if (oldState.channelId === newState.channelId) return;
+
   // Entró a un canal
   if (!oldState.channelId && newState.channelId) {
     voiceSessions.set(userId, {
@@ -125,7 +132,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   // Salió de un canal
   if (oldState.channelId && !newState.channelId) {
     const session = voiceSessions.get(userId);
-    if (!session) return;
+    if (!session) return; // Evita repeticiones
 
     const leftAt = new Date();
     const durationMs = leftAt - session.joinedAt;
@@ -152,8 +159,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     const message = `
 👤 **Usuario:** ${username}
 🎧 **Canal:** ${session.channel}
-📅 **Conectó:** ${session.joinedAt.toLocaleString()}
-📅 **Desconectó:** ${leftAt.toLocaleString()}
+📅 **Conectó:** ${formatDate(session.joinedAt)}
+📅 **Desconectó:** ${formatDate(leftAt)}
 ⏱ **Tiempo conectado:** ${hours}h ${minutes}m ${seconds}s
     `;
 
@@ -205,7 +212,6 @@ client.on('interactionCreate', async interaction => {
 
   // /exportar
   if (interaction.commandName === 'exportar') {
-    // Solo admins
     if (!interaction.member.permissions.has('Administrator')) {
       return interaction.reply({
         content: '❌ Solo los administradores pueden usar este comando.',
@@ -244,8 +250,8 @@ client.on('interactionCreate', async interaction => {
         sheet.addRow({
           usuario: username,
           canal: sess.channel,
-          conecto: sess.joinedAt.toLocaleString(),
-          desconecto: sess.leftAt.toLocaleString(),
+          conecto: formatDate(sess.joinedAt),
+          desconecto: formatDate(sess.leftAt),
           tiempo: `${h}h ${m}m ${s}s`
         });
       });
